@@ -1,0 +1,644 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Maze Walker</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #14161c; overflow: hidden; }
+  canvas { display: block; }
+  #hint {
+    position: fixed; left: 12px; bottom: 12px; color: #9aa3b5;
+    font: 14px system-ui, sans-serif; pointer-events: none;
+    text-shadow: 0 1px 3px #000;
+  }
+  #toggle {
+    position: fixed; right: 12px; top: 12px; padding: 8px 14px;
+    background: #3b4a6b; color: #fff; border: 0; border-radius: 6px;
+    font: 14px system-ui, sans-serif; cursor: pointer;
+  }
+  #toggle:hover, #raysBtn:hover { background: #4a5b82; }
+  #speedBox {
+    position: fixed; right: 12px; top: 92px; padding: 8px 12px;
+    background: #3b4a6b; color: #fff; border-radius: 6px;
+    font: 14px system-ui, sans-serif;
+    display: flex; flex-direction: column; gap: 4px;
+  }
+  #speedBox input { width: 140px; }
+  #raysBtn {
+    position: fixed; right: 12px; top: 52px; padding: 8px 14px;
+    background: #3b4a6b; color: #fff; border: 0; border-radius: 6px;
+    font: 14px system-ui, sans-serif; cursor: pointer;
+  }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div id="hint"></div>
+<button id="toggle"></button>
+<button id="raysBtn"></button>
+<div id="speedBox">
+  <label>Speed <span id="speedVal">1.00x</span></label>
+  <input id="speed" type="range" min="0.25" max="3" step="0.05" value="1">
+</div>
+
+<script>
+// ---------- 1. SETUP ----------
+const canvas = document.getElementById("c");
+const ctx = canvas.getContext("2d");
+
+// W and H are the screen size in normal pixels.
+// dpr = how many real device pixels per normal pixel (2 on many phones/laptops).
+// We make the canvas use the REAL pixels, so the 3D view gets more rays and is sharper.
+let W, H;
+const dpr = Math.min(window.devicePixelRatio || 1, 2);
+
+function resize() {
+  W = window.innerWidth;
+  H = window.innerHeight;
+  canvas.width = Math.floor(W * dpr);
+  canvas.height = Math.floor(H * dpr);
+  canvas.style.width = W + "px";
+  canvas.style.height = H + "px";
+}
+window.addEventListener("resize", resize);
+resize();
+
+// ---------- 2. MAZE GENERATION ----------
+// 1 = wall, 0 = floor. Size must be odd.
+const COLS = 61;
+const ROWS = 61;
+const TILE = 72;
+
+let grid;
+
+function makeMaze() {
+  grid = [];
+  for (let y = 0; y < ROWS; y++) {
+    grid.push(new Array(COLS).fill(1));
+  }
+
+  // Recursive backtracker: walk randomly carving corridors, back up when stuck.
+  const stack = [[1, 1]];
+  grid[1][1] = 0;
+
+  while (stack.length > 0) {
+    const [x, y] = stack[stack.length - 1];
+
+    const options = [];
+    for (const [dx, dy] of [[2, 0], [-2, 0], [0, 2], [0, -2]]) {
+      const nx = x + dx, ny = y + dy;
+      if (nx > 0 && ny > 0 && nx < COLS - 1 && ny < ROWS - 1 && grid[ny][nx] === 1) {
+        options.push([dx, dy]);
+      }
+    }
+
+    if (options.length === 0) {
+      stack.pop();
+    } else {
+      const [dx, dy] = options[Math.floor(Math.random() * options.length)];
+      grid[y + dy / 2][x + dx / 2] = 0;
+      grid[y + dy][x + dx] = 0;
+      stack.push([x + dx, y + dy]);
+    }
+  }
+
+  // Knock out a few extra walls so there are some loops
+  for (let i = 0; i < 150; i++) {
+    const x = 1 + Math.floor(Math.random() * (COLS - 2));
+    const y = 1 + Math.floor(Math.random() * (ROWS - 2));
+    const horiz = grid[y][x - 1] === 0 && grid[y][x + 1] === 0;
+    const vert = grid[y - 1][x] === 0 && grid[y + 1][x] === 0;
+    if (grid[y][x] === 1 && (horiz || vert)) grid[y][x] = 0;
+  }
+
+  // Finally, carve some big open rooms with small walls inside them
+  addRooms();
+}
+
+// Clears a few big rectangles out of the maze and puts small walls inside.
+// Every room overlaps the maze corridors, so you can always walk into it.
+function addRooms() {
+  const ROOM_COUNT = 14;
+
+  for (let r = 0; r < ROOM_COUNT; r++) {
+    // Random room size and position (measured in tiles)
+    const rw = 5 + Math.floor(Math.random() * 6); // 5 to 10 wide
+    const rh = 5 + Math.floor(Math.random() * 5); // 5 to 9 tall
+    const rx = 1 + Math.floor(Math.random() * (COLS - rw - 1));
+    const ry = 1 + Math.floor(Math.random() * (ROWS - rh - 1));
+
+    // 1) Clear the whole room to floor
+    for (let y = ry; y < ry + rh; y++) {
+      for (let x = rx; x < rx + rw; x++) {
+        grid[y][x] = 0;
+      }
+    }
+
+    // 2) Add small walls inside. Pick one of three styles at random.
+    //    We never touch the outer ring of the room, so the doors stay open.
+    const style = Math.floor(Math.random() * 3);
+
+    if (style === 0) {
+      // A neat grid of single-tile pillars
+      for (let y = ry + 2; y < ry + rh - 1; y += 2) {
+        for (let x = rx + 2; x < rx + rw - 1; x += 2) {
+          grid[y][x] = 1;
+        }
+      }
+    } else if (style === 1) {
+      // Pillars scattered randomly
+      for (let y = ry + 1; y < ry + rh - 1; y++) {
+        for (let x = rx + 1; x < rx + rw - 1; x++) {
+          if (Math.random() < 0.12) grid[y][x] = 1;
+        }
+      }
+    } else {
+      // A few short wall pieces, 2 to 3 tiles long
+      for (let k = 0; k < 4; k++) {
+        const horizontal = Math.random() < 0.5;
+        const len = 2 + Math.floor(Math.random() * 2);
+        const sx = rx + 2 + Math.floor(Math.random() * (rw - 4));
+        const sy = ry + 2 + Math.floor(Math.random() * (rh - 4));
+        for (let i = 0; i < len; i++) {
+          const x = sx + (horizontal ? i : 0);
+          const y = sy + (horizontal ? 0 : i);
+          if (x < rx + rw - 1 && y < ry + rh - 1) grid[y][x] = 1;
+        }
+      }
+    }
+  }
+}
+
+// ---------- 3. PLAYER AND VIEW MODES ----------
+// Three views: "2d" (top-down), "3d" (first person), "split" (both at once)
+const MODES = ["2d", "3d", "split"];
+const MODE_NAMES = { "2d": "2D", "3d": "3D", "split": "Split" };
+let mode = "2d";
+let viewAngle = 0;          // which way you are looking (used in 3D and split)
+const TURN_SPEED = 4;       // how fast you turn (radians/sec). Was 2.5, now quicker
+const FOV = Math.PI / 3;    // field of view in 3D (60 degrees)
+// Ray display options (click the button or press X to cycle through them)
+const RAY_OPTIONS = [
+  { name: "Off",    count: 0 },
+  { name: "Few",    count: 15 },
+  { name: "Normal", count: 60 },
+  { name: "Many",   count: 200 }
+];
+let rayOption = 2;          // start on "Normal"
+
+const toggleBtn = document.getElementById("toggle");
+const hint = document.getElementById("hint");
+const raysBtn = document.getElementById("raysBtn");
+raysBtn.addEventListener("click", () => { cycleRays(); raysBtn.blur(); });
+
+function updateLabels() {
+  toggleBtn.textContent = "View: " + MODE_NAMES[mode] + " (V)";
+  raysBtn.textContent = "Rays: " + RAY_OPTIONS[rayOption].name + " (X)";
+  hint.textContent = "W/S or Up/Down: forward/back | A/D or Left/Right: turn | V: view | X: rays | R: new maze";
+}
+
+function cycleRays() {
+  rayOption = (rayOption + 1) % RAY_OPTIONS.length;
+  updateLabels();
+}
+
+function toggleMode() {
+  const old = mode;
+  mode = MODES[(MODES.indexOf(mode) + 1) % MODES.length];
+  if (old === "2d") viewAngle = player.angle; // look the way the triangle points
+  updateLabels();
+}
+toggleBtn.addEventListener("click", () => { toggleMode(); toggleBtn.blur(); });
+
+const player = {
+  x: 0, y: 0,      // position (pixels)
+  vx: 0, vy: 0,    // velocity (pixels per second)
+  angle: 0,        // which way the triangle points
+  radius: 4        // size of the collision circle (tiles are 72 wide)
+};
+
+function resetPlayer() {
+  player.x = 1.5 * TILE;
+  player.y = 1.5 * TILE;
+  player.vx = 0;
+  player.vy = 0;
+  player.angle = 0;
+  viewAngle = 0;
+}
+
+// ---------- 4. INPUT ----------
+const keys = {};
+window.addEventListener("keydown", (e) => {
+  keys[e.key.toLowerCase()] = true;
+  if (e.key.toLowerCase() === "r") { makeMaze(); resetPlayer(); }
+  if (e.key.toLowerCase() === "v") toggleMode();
+  if (e.key.toLowerCase() === "x") cycleRays();
+  if (e.key.startsWith("Arrow")) e.preventDefault();
+});
+window.addEventListener("keyup", (e) => { keys[e.key.toLowerCase()] = false; });
+
+// ---------- 5. PHYSICS ----------
+const ACCEL = 1050;     // how hard keys push you (this sets your top speed)
+
+// The speed slider changes speedMult, which scales ACCEL (1 = normal speed)
+let speedMult = 1;
+const speedSlider = document.getElementById("speed");
+const speedVal = document.getElementById("speedVal");
+speedSlider.addEventListener("input", () => {
+  speedMult = parseFloat(speedSlider.value);
+  speedVal.textContent = speedMult.toFixed(2) + "x";
+});
+// Let go of the slider when you release it, so the arrow keys keep steering you
+speedSlider.addEventListener("change", () => speedSlider.blur());
+const DRAG = 4;         // friction (higher = stops faster)
+const BOUNCE = 0.25;    // how much you bounce off walls (0 = none)
+
+function update(dt) {
+  // Same controls in every view: left/right turn, up/down walk forward/back
+  if (keys["a"] || keys["arrowleft"])  viewAngle -= TURN_SPEED * dt;
+  if (keys["d"] || keys["arrowright"]) viewAngle += TURN_SPEED * dt;
+
+  let forward = 0;
+  if (keys["w"] || keys["arrowup"])   forward += 1;
+  if (keys["s"] || keys["arrowdown"]) forward -= 1;
+
+  // "forward" means the direction we are facing
+  let ax = Math.cos(viewAngle) * forward;
+  let ay = Math.sin(viewAngle) * forward;
+
+  // Keep diagonal movement from being faster
+  const len = Math.hypot(ax, ay);
+  if (len > 0) { ax /= len; ay /= len; }
+
+  // Speed up, then apply friction
+  player.vx += ax * ACCEL * speedMult * dt;
+  player.vy += ay * ACCEL * speedMult * dt;
+  player.vx -= player.vx * DRAG * dt;
+  player.vy -= player.vy * DRAG * dt;
+
+  player.x += player.vx * dt;
+  player.y += player.vy * dt;
+
+  collideWithWalls();
+
+  player.angle = viewAngle; // the triangle always points the way you face
+}
+
+function collideWithWalls() {
+  const tx = Math.floor(player.x / TILE);
+  const ty = Math.floor(player.y / TILE);
+
+  for (let y = ty - 1; y <= ty + 1; y++) {
+    for (let x = tx - 1; x <= tx + 1; x++) {
+      if (y < 0 || x < 0 || y >= ROWS || x >= COLS) continue;
+      if (grid[y][x] !== 1) continue;
+
+      const left = x * TILE, top = y * TILE;
+      const cx = Math.max(left, Math.min(player.x, left + TILE));
+      const cy = Math.max(top, Math.min(player.y, top + TILE));
+
+      let dx = player.x - cx;
+      let dy = player.y - cy;
+      let dist = Math.hypot(dx, dy);
+
+      if (dist < player.radius) {
+        if (dist === 0) { dx = 0; dy = -1; dist = 1; }
+        const nx = dx / dist;
+        const ny = dy / dist;
+
+        // 1) Push out of the wall
+        const push = player.radius - dist;
+        player.x += nx * push;
+        player.y += ny * push;
+
+        // 2) Remove the speed going INTO the wall (sideways speed stays = sliding)
+        const into = player.vx * nx + player.vy * ny;
+        if (into < 0) {
+          player.vx -= (1 + BOUNCE) * into * nx;
+          player.vy -= (1 + BOUNCE) * into * ny;
+        }
+      }
+    }
+  }
+}
+
+// ---------- 6. DRAWING ----------
+// Each draw function paints into a rectangle (x, y, w, h) of the screen.
+// That is what makes split screen easy: just give each view its own rectangle.
+
+function draw() {
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0); // from now on we draw in normal pixels
+  ctx.fillStyle = "#14161c";
+  ctx.fillRect(0, 0, W, H);
+
+  if (mode === "2d") {
+    draw2D(0, 0, W, H);
+  } else if (mode === "3d") {
+    draw3D(0, 0, W, H);
+  } else if (W >= H) {
+    // Split: map on the left, first-person on the right
+    draw2D(0, 0, W / 2, H);
+    draw3D(W / 2, 0, W / 2, H);
+    ctx.fillStyle = "#000";
+    ctx.fillRect(W / 2 - 1, 0, 2, H);
+  } else {
+    // Tall screen (phone): first-person on top, map below
+    draw3D(0, 0, W, H / 2);
+    draw2D(0, H / 2, W, H / 2);
+    ctx.fillStyle = "#000";
+    ctx.fillRect(0, H / 2 - 1, W, 2);
+  }
+}
+
+// Shoots ONE ray from the player in the given direction.
+// It returns how far away the wall is (in tiles), which side of the wall
+// it hit, and where along that wall tile it landed (0 to 1).
+// Both the 3D view and the map's ray lines use this same function.
+function castRay(angle) {
+  const px = player.x / TILE;
+  const py = player.y / TILE;
+  const dirX = Math.cos(angle) || 1e-9;
+  const dirY = Math.sin(angle) || 1e-9;
+
+  // Set up the ray march (DDA): how far to cross one tile sideways / up-down
+  let mapX = Math.floor(px), mapY = Math.floor(py);
+  const deltaX = Math.abs(1 / dirX);
+  const deltaY = Math.abs(1 / dirY);
+  let stepX, stepY, sideX, sideY;
+  if (dirX < 0) { stepX = -1; sideX = (px - mapX) * deltaX; }
+  else          { stepX = 1;  sideX = (mapX + 1 - px) * deltaX; }
+  if (dirY < 0) { stepY = -1; sideY = (py - mapY) * deltaY; }
+  else          { stepY = 1;  sideY = (mapY + 1 - py) * deltaY; }
+
+  // Step tile edge by tile edge until we hit a wall
+  let hitSide = 0;
+  for (let n = 0; n < 100; n++) {
+    if (sideX < sideY) { sideX += deltaX; mapX += stepX; hitSide = 0; }
+    else               { sideY += deltaY; mapY += stepY; hitSide = 1; }
+    if (mapX < 0 || mapY < 0 || mapX >= COLS || mapY >= ROWS || grid[mapY][mapX] === 1) break;
+  }
+
+  const dist = hitSide === 0 ? sideX - deltaX : sideY - deltaY;
+  let wallX = hitSide === 0 ? py + dist * dirY : px + dist * dirX;
+  wallX -= Math.floor(wallX);
+  return { dist, hitSide, wallX };
+}
+
+// ----- The wall texture -----
+// We paint a small brick picture ONCE at startup. Then every wall strip on screen
+// is just a 1-pixel-wide slice of this picture, stretched to the strip's height.
+const TEX = 128;
+const wallTex = document.createElement("canvas");
+wallTex.width = TEX;
+wallTex.height = TEX;
+
+function makeWallTexture() {
+  const t = wallTex.getContext("2d");
+  const rows = 8;                 // rows of bricks
+  const rowH = TEX / rows;
+  const brickW = TEX / 4;         // 4 bricks across
+
+  // Fill with dark "mortar" first; the bricks sit on top of it
+  t.fillStyle = "#12161f";
+  t.fillRect(0, 0, TEX, TEX);
+
+  for (let r = 0; r < rows; r++) {
+    const offset = (r % 2) * (brickW / 2); // every other row is shifted sideways
+    for (let b = -1; b <= 4; b++) {
+      const bx = b * brickW + offset + 2;
+      const by = r * rowH + 2;
+      const bw = brickW - 4;
+      const bh = rowH - 4;
+
+      // Each brick gets a slightly different shade
+      const v = 0.8 + Math.random() * 0.4;
+      t.fillStyle = `rgb(${(60 * v) | 0}, ${(78 * v) | 0}, ${(118 * v) | 0})`;
+      t.fillRect(bx, by, bw, bh);
+
+      // Light edge on top, dark edge on the bottom, so bricks look raised
+      t.fillStyle = "rgba(255, 255, 255, 0.18)";
+      t.fillRect(bx, by, bw, 2);
+      t.fillStyle = "rgba(0, 0, 0, 0.25)";
+      t.fillRect(bx, by + bh - 2, bw, 2);
+
+      // A few random specks so the surface isn't perfectly flat
+      for (let s = 0; s < 8; s++) {
+        t.fillStyle = Math.random() < 0.5 ? "rgba(255,255,255,0.12)" : "rgba(0,0,0,0.18)";
+        t.fillRect(bx + Math.random() * bw, by + Math.random() * bh, 2, 2);
+      }
+    }
+  }
+}
+makeWallTexture();
+
+// ----- The floor -----
+// For every spot on the floor we work out which spot in the maze it shows,
+// then color it like a checkerboard. Doing this for every screen pixel would be
+// slow, so we draw into a small image (each pixel = FLOOR_BLOCK screen pixels)
+// and stretch it to fit. That also gives it a chunky retro look.
+const FLOOR_BLOCK = 3;
+const floorCanvas = document.createElement("canvas");
+const floorCtx = floorCanvas.getContext("2d");
+let floorImg = null;
+
+function drawFloor(w, h, px, py, projDist) {
+  const fw = Math.ceil(w / FLOOR_BLOCK);          // floor image size
+  const fh = Math.ceil((h / 2) / FLOOR_BLOCK);    // only the bottom half of the screen
+  if (floorCanvas.width !== fw || floorCanvas.height !== fh) {
+    floorCanvas.width = fw;
+    floorCanvas.height = fh;
+    floorImg = floorCtx.createImageData(fw, fh);
+  }
+  const data = floorImg.data;
+
+  // For each column, work out which direction its ray points (once, not per row)
+  const cosA = new Float32Array(fw);
+  const sinA = new Float32Array(fw);
+  const stretch = new Float32Array(fw); // slanted rays travel farther than straight ones
+  for (let fx = 0; fx < fw; fx++) {
+    const t = ((fx + 0.5) * FLOOR_BLOCK - w / 2) / projDist;
+    const angle = viewAngle + Math.atan(t);
+    cosA[fx] = Math.cos(angle);
+    sinA[fx] = Math.sin(angle);
+    stretch[fx] = Math.sqrt(1 + t * t);
+  }
+
+  for (let fy = 0; fy < fh; fy++) {
+    // How far below the horizon is this row? Lower rows are closer to us.
+    const below = (fy + 0.5) * FLOOR_BLOCK;
+    const rowDist = 0.5 * projDist / below;       // distance in tiles straight ahead
+    const shade = Math.max(0.15, 1 - rowDist / 12); // farther = darker, like the walls
+
+    for (let fx = 0; fx < fw; fx++) {
+      // The spot in the maze (in tiles) that this floor pixel is looking at
+      const dist = rowDist * stretch[fx];
+      const wx = px + cosA[fx] * dist;
+      const wy = py + sinA[fx] * dist;
+
+      // Checkerboard: squares half a tile wide, alternating two colors
+      const odd = (Math.floor(wx * 2) + Math.floor(wy * 2)) & 1;
+      const r = odd ? 56 : 42;
+      const g = odd ? 64 : 48;
+      const b = odd ? 90 : 68;
+
+      const i = (fy * fw + fx) * 4;
+      data[i] = r * shade;
+      data[i + 1] = g * shade;
+      data[i + 2] = b * shade;
+      data[i + 3] = 255;
+    }
+  }
+
+  floorCtx.putImageData(floorImg, 0, 0);
+  ctx.imageSmoothingEnabled = false; // keep the blocks crisp
+  ctx.drawImage(floorCanvas, 0, h / 2, fw * FLOOR_BLOCK, fh * FLOOR_BLOCK);
+}
+
+function draw3D(x, y, w, h) {
+  ctx.save();
+  ctx.beginPath();
+  ctx.rect(x, y, w, h);
+  ctx.clip();            // anything we draw outside the rectangle is cut off
+  ctx.translate(x, y);   // (0,0) is now the top-left of our rectangle
+
+  // Ceiling: dark at the horizon (far away), lighter overhead
+  const sky = ctx.createLinearGradient(0, 0, 0, h / 2);
+  sky.addColorStop(0, "#2b3142");
+  sky.addColorStop(1, "#0f1117");
+  ctx.fillStyle = sky;
+  ctx.fillRect(0, 0, w, h / 2);
+
+  // Position in "tile units" (1 = one tile)
+  const px = player.x / TILE;
+  const py = player.y / TILE;
+  const projDist = (w / 2) / Math.tan(FOV / 2); // distance from the eye to the "screen"
+
+  // Draw the floor first, so the walls get painted on top of it
+  drawFloor(w, h, px, py, projDist);
+
+  // One ray per REAL device pixel column (more rays on sharp screens)
+  const rays = Math.floor(w * dpr);
+  const colW = w / rays;
+
+  for (let i = 0; i < rays; i++) {
+    const frac = (i + 0.5) / rays; // 0 = left edge of view, 1 = right edge
+    const rayAngle = viewAngle + Math.atan((frac - 0.5) * 2 * Math.tan(FOV / 2));
+    // Shoot the ray, then turn its distance into a strip height
+    const hit = castRay(rayAngle);
+    const hitSide = hit.hitSide;
+    const wallX = hit.wallX;
+
+    // cos() removes the fish-eye bending
+    const perp = Math.max(0.05, hit.dist * Math.cos(rayAngle - viewAngle));
+    const lineH = projDist / perp;
+
+    // Which vertical slice of the brick picture did the ray hit?
+    let texX = Math.floor(wallX * TEX);
+    // Flip on some faces so the bricks don't look mirrored
+    const rayDirX = Math.cos(rayAngle), rayDirY = Math.sin(rayAngle);
+    if ((hitSide === 0 && rayDirX > 0) || (hitSide === 1 && rayDirY < 0)) texX = TEX - 1 - texX;
+
+    // Draw that 1-pixel slice, stretched to the strip height
+    // (+0.5 overlap hides tiny gaps between neighbouring strips)
+    const stripX = i * colW;
+    const stripY = (h - lineH) / 2;
+    ctx.drawImage(wallTex, texX, 0, 1, TEX, stripX, stripY, colW + 0.5 / dpr, lineH);
+
+    // Shading: lay a see-through dark layer on top.
+    // Farther = darker, and one wall direction is darker so corners are easy to see.
+    let shade = Math.max(0.15, 1 - perp / 12);
+    if (hitSide === 1) shade *= 0.7;
+    ctx.fillStyle = "rgba(8, 10, 18, " + (1 - shade).toFixed(2) + ")";
+    ctx.fillRect(stripX, stripY, colW + 0.5 / dpr, lineH);
+  }
+
+  ctx.restore();
+}
+
+function draw2D(x, y, w, h) {
+  ctx.save();
+  ctx.beginPath();
+  ctx.rect(x, y, w, h);
+  ctx.clip();
+  ctx.translate(x, y);
+
+  ctx.fillStyle = "#14161c";
+  ctx.fillRect(0, 0, w, h);
+
+  // Camera: keep the player in the middle of this rectangle
+  const camX = player.x - w / 2;
+  const camY = player.y - h / 2;
+
+  ctx.save();
+  ctx.translate(-camX, -camY);
+
+  const x0 = Math.max(0, Math.floor(camX / TILE));
+  const x1 = Math.min(COLS - 1, Math.ceil((camX + w) / TILE));
+  const y0 = Math.max(0, Math.floor(camY / TILE));
+  const y1 = Math.min(ROWS - 1, Math.ceil((camY + h) / TILE));
+
+  for (let ty = y0; ty <= y1; ty++) {
+    for (let tx = x0; tx <= x1; tx++) {
+      ctx.fillStyle = grid[ty][tx] === 1 ? "#3b4a6b" : "#1d212b";
+      ctx.fillRect(tx * TILE, ty * TILE, TILE, TILE);
+    }
+  }
+
+  // Draw the rays: a line from the player to the wall each ray hits
+  const raysShown = RAY_OPTIONS[rayOption].count;
+  if (raysShown > 0) {
+    const look = viewAngle;
+    ctx.lineWidth = 1;
+    for (let i = 0; i < raysShown; i++) {
+      const frac = (i + 0.5) / raysShown;
+      const rayAngle = look + Math.atan((frac - 0.5) * 2 * Math.tan(FOV / 2));
+      const hit = castRay(rayAngle);
+      const endX = player.x + Math.cos(rayAngle) * hit.dist * TILE;
+      const endY = player.y + Math.sin(rayAngle) * hit.dist * TILE;
+
+      ctx.strokeStyle = "rgba(255, 209, 102, 0.35)";
+      ctx.beginPath();
+      ctx.moveTo(player.x, player.y);
+      ctx.lineTo(endX, endY);
+      ctx.stroke();
+
+      ctx.fillStyle = "#ff6b6b"; // red dot where the ray hit the wall
+      ctx.fillRect(endX - 1.5, endY - 1.5, 3, 3);
+    }
+  }
+
+  // The triangle, rotated to face its direction
+  ctx.save();
+  ctx.translate(player.x, player.y);
+  ctx.rotate(player.angle);
+  ctx.beginPath();
+  ctx.moveTo(player.radius + 2, 0);
+  ctx.lineTo(-player.radius, -player.radius * 0.85);
+  ctx.lineTo(-player.radius, player.radius * 0.85);
+  ctx.closePath();
+  ctx.fillStyle = "#ffd166";
+  ctx.fill();
+  ctx.restore();
+
+  ctx.restore();
+  ctx.restore();
+}
+
+// ---------- 7. GAME LOOP ----------
+let last = performance.now();
+function loop(now) {
+  const dt = Math.min(0.033, (now - last) / 1000);
+  last = now;
+  update(dt);
+  draw();
+  requestAnimationFrame(loop);
+}
+
+makeMaze();
+resetPlayer();
+updateLabels();
+requestAnimationFrame(loop);
+</script>
+</body>
+</html>
